@@ -4,6 +4,7 @@ Pipeline principal para processamento Pseudo-LiDAR e geração de vista BEV
 
 import cv2
 import time
+import numpy as np
 from typing import Optional, Dict, Any
 import logging
 
