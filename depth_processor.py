@@ -17,11 +17,13 @@ except ImportError:
     DPT_AVAILABLE = False
     logging.warning("Transformers não disponível. DPT não será usado.")
 
+# MiDaS via torch.hub (método correto)
 try:
-    import midas
-    from midas.utils import download_model_if_doesnt_exist, load_model, transform
+    # Testar se conseguimos carregar via torch.hub
+    torch.hub.list('intel-isl/MiDaS', trust_repo=True)
     MIDAS_AVAILABLE = True
-except ImportError:
+    logging.info("MiDaS disponível via torch.hub")
+except Exception:
     MIDAS_AVAILABLE = False
     logging.warning("MiDaS não disponível.")
 
@@ -142,17 +144,32 @@ class DepthProcessor:
         return True
     
     def _load_midas_model(self) -> bool:
-        """Carrega modelo MiDaS."""
-        model_type = "DPT_Large"
-        model_path = download_model_if_doesnt_exist(model_type)
-        
-        self.depth_model, self._transform_fn, net_w, net_h = load_model(
-            self.device, model_path, model_type, optimize=True, height=None, square=False
-        )
-        
-        self._input_size = (net_w, net_h)
-        logger.info(f"Modelo MiDaS carregado: {model_type}")
-        return True
+        """Carrega modelo MiDaS via torch.hub."""
+        try:
+            # Determinar modelo baseado no nome configurado
+            if "small" in self.model_name.lower():
+                model_type = "MiDaS_small"
+            else:
+                model_type = "MiDaS"
+            
+            # Carregar modelo via torch.hub
+            self.depth_model = torch.hub.load('intel-isl/MiDaS', model_type, pretrained=True, trust_repo=True)
+            self.depth_model.to(self.device)
+            self.depth_model.eval()
+            
+            # Carregar transforms
+            transforms = torch.hub.load('intel-isl/MiDaS', 'transforms', trust_repo=True)
+            if "small" in model_type.lower():
+                self._transform_fn = transforms.small_transform
+            else:
+                self._transform_fn = transforms.default_transform
+            
+            logger.info(f"Modelo MiDaS carregado via torch.hub: {model_type}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Erro carregando MiDaS via torch.hub: {e}")
+            return False
     
     def _load_yolo_model(self, model_name: str) -> bool:
         """Carrega modelo YOLO."""
@@ -220,14 +237,19 @@ class DepthProcessor:
         return depth_map
     
     def _estimate_depth_midas(self, frame: np.ndarray) -> np.ndarray:
-        """Estimativa de profundidade usando MiDaS."""
-        # Pré-processar
-        input_tensor = self._transform_fn({"image": frame})["image"]
+        """Estimativa de profundidade usando MiDaS via torch.hub."""
+        # Converter BGR para RGB se necessário
+        if len(frame.shape) == 3 and frame.shape[2] == 3:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # Pré-processar usando transform do MiDaS
+        input_tensor = self._transform_fn(frame).to(self.device)
         
         # Inferência
         with torch.no_grad():
-            sample = torch.from_numpy(input_tensor).to(self.device).unsqueeze(0)
-            prediction = self.depth_model.forward(sample)
+            prediction = self.depth_model(input_tensor)
+            
+            # Redimensionar para tamanho original
             prediction = torch.nn.functional.interpolate(
                 prediction.unsqueeze(1),
                 size=frame.shape[:2],
